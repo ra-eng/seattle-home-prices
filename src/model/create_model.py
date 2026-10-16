@@ -5,6 +5,7 @@ from typing import List
 from typing import Tuple
 
 import pandas
+from sklearn import impute
 from sklearn import model_selection
 from sklearn import neighbors
 from sklearn import pipeline
@@ -58,9 +59,11 @@ def main():
     x_train, _x_test, y_train, _y_test = model_selection.train_test_split(
         x, y, random_state=42)
 
-    model = pipeline.make_pipeline(preprocessing.RobustScaler(),
-                                   neighbors.KNeighborsRegressor()).fit(
-                                       x_train, y_train)
+    model = pipeline.make_pipeline(
+        impute.KNNImputer(n_neighbors=5, weights="distance"),
+        preprocessing.RobustScaler(),
+        neighbors.KNeighborsRegressor(),
+    ).fit(x_train, y_train)
 
     output_dir = pathlib.Path(OUTPUT_DIR)
     output_dir.mkdir(exist_ok=True)
