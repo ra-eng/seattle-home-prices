@@ -12,4 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src .
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Single-row predictions are slower with multithreaded BLAS/OpenMP (thread oversubscription);
+# parallelism comes from uvicorn workers instead.
+ENV WEB_CONCURRENCY=2 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

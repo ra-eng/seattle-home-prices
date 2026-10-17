@@ -9,7 +9,8 @@ mle-project-challenge-2026
 ├── src
 │   ├── main.py                # Entry point for the FastAPI application
 │   ├── api
-│   │   └── endpoints.py       # API endpoints for predictions
+│   │   ├── endpoints.py       # API endpoints for predictions
+│   │   └── resources.py       # Model artifacts loaded once at startup
 │   ├── model
 │   │   ├── model.pkl          # Serialized machine learning model
 │   │   └── model_features.json # Features required for predictions
@@ -17,8 +18,8 @@ mle-project-challenge-2026
 │   │   ├── kc_house_data.csv  # Training data for the model
 │   │   ├── zipcode_demographics.csv # Demographic data for predictions
 │   │   └── future_unseen_examples.csv # Examples for testing the API
-│   └── utils
-│       └── loader.py          # Utility functions for loading the model
+├── scripts
+│   └── benchmark.py            # Latency and load benchmarks
 ├── requirements.txt            # Project dependencies
 ├── Dockerfile                  # Docker instructions for deployment
 ├── README.md                   # Project documentation
@@ -134,6 +135,53 @@ Mean/median do better on `sqft_lot`, which has heavy outliers and little correla
 We also tried scaling *before* imputing. It was marginally better with partial data (-1%) but 10% worse when only the zipcode is sent, so we kept the notebook's order.
 
 **Limitations.** `k=5` is the scikit-learn default and was not tuned. The model is trained on complete data only, so it never sees imputed values during training.
+
+## Performance
+
+### How it was measured
+
+- `time.perf_counter()`: latency of each step of `/predict`, in process, over the 100 rows of `future_unseen_examples.csv`.
+- `cProfile`: which functions the time is spent in (`python -m cProfile -s cumtime scripts/benchmark.py`).
+- Load test: 400 requests from 20 concurrent `httpx` clients against a running API.
+
+```bash
+uv run python scripts/benchmark.py                                   # in-process latency
+uv run python scripts/benchmark.py --load http://localhost:8000      # load test a running API
+```
+
+### Bottlenecks and fixes
+
+| Bottleneck | Fix |
+|---|---|
+| Model (9 MB pickle), feature list and demographics CSV reloaded on every request | Loaded once at startup in the FastAPI `lifespan` (`src/api/resources.py`) |
+| Demographics filtered with pandas and merged with `pd.concat` per request | Pre-indexed `dict` by zipcode; the input row is built in one step |
+| OpenBLAS and OpenMP each spawn 16 threads for a single-row prediction; they compete for the CPU and make imputation ~9x slower | `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`; parallelism comes from workers |
+| `async def` endpoint running CPU-bound code blocks the event loop, so requests are served one at a time | Sync `def` endpoint, run by FastAPI in its threadpool |
+| Container started with `--reload` and a single worker | No `--reload`; `WEB_CONCURRENCY=2` uvicorn workers |
+| `/health` reported healthy before the model was loaded | Returns `503` until resources are loaded |
+
+### Results
+
+In-process latency per prediction:
+
+| Scenario | Before p50 / p95 | After p50 / p95 |
+|---|---|---|
+| Complete data | 4.4 / 5.5 ms | 1.3 / 1.9 ms |
+| 30% missing fields | 49 / 101 ms | 6.8 / 7.9 ms |
+
+Load test (20 concurrent clients, 30% missing fields):
+
+| Version | Throughput | p50 | p95 |
+|---|---|---|---|
+| Before | 15 req/s | 1,315 ms | 1,760 ms |
+| After, 1 worker | 160 req/s | 124 ms | 207 ms |
+| After, 2 workers | 213 req/s | 89 ms | 132 ms |
+
+Predictions are unchanged: `test_predictions_match_previous_implementation` checks every example against the previous code.
+
+### Scaling further
+
+Each worker is a separate process holding its own copy of the model (~9 MB), so `WEB_CONCURRENCY` can grow with the CPU count. The API is stateless and its artifacts are read-only, so it scales horizontally behind a load balancer, with `/health` as the readiness probe.
 
 ## Testing
 

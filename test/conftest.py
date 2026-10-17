@@ -1,14 +1,21 @@
+import os
+from pathlib import Path
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
-import httpx
-import os
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 
 
 @pytest.fixture
-def test_client():
-    """Fixture for unit tests using FastAPI TestClient."""
+def test_client(monkeypatch):
+    """Fixture for unit tests using FastAPI TestClient; the context manager runs the lifespan."""
+    monkeypatch.setenv("MODEL_DIR", str(SRC_DIR / "model"))
+    monkeypatch.setenv("DATA_DIR", str(SRC_DIR / "data"))
     from src.main import app
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture

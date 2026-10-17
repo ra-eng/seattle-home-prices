@@ -1,8 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import json
-import pickle
-import pandas as pd
 
 router = APIRouter()
 
@@ -19,37 +17,30 @@ class HomeFeatures(BaseModel):
 
 
 @router.get("/health")
-async def health_check():
+def health_check(request: Request):
     """
     Health check endpoint for container orchestration.
-    Returns 200 if API is ready to accept requests.
+    Returns 200 once the model is loaded and the API is ready to accept requests.
     """
+    if getattr(request.app.state, "resources", None) is None:
+        return JSONResponse(status_code=503, content={"status": "loading"})
     return {"status": "healthy"}
 
 
 @router.post("/predict")
-async def predict(home_features: HomeFeatures):
-    # Load the model and features
-    with open("model/model.pkl", "rb") as model_file:
-        model = pickle.load(model_file)
+def predict(home_features: HomeFeatures, request: Request):
+    """Predict a home price, imputing missing house features with the model's KNNImputer.
 
-    with open("model/model_features.json") as features_file:
-        model_features = json.load(features_file)
-
-    # Load demographic data
-    demographics = pd.read_csv("data/zipcode_demographics.csv", dtype={"zipcode": str})
-    demographic_info = demographics[demographics["zipcode"] == home_features.zipcode]
-    if demographic_info.empty:
+    Declared as sync so FastAPI runs the CPU-bound prediction in its threadpool
+    instead of blocking the event loop.
+    """
+    resources = request.app.state.resources
+    input_data = resources.build_row(
+        home_features.zipcode, home_features.model_dump(exclude={"zipcode"})
+    )
+    if input_data is None:
         raise HTTPException(status_code=422, detail=f"Unknown zipcode: {home_features.zipcode}")
 
-    # Combine input data with demographic data; missing fields become NaN for the KNN imputer
-    input_data = pd.concat(
-        [pd.DataFrame([home_features.model_dump()]), demographic_info.reset_index(drop=True)],
-        axis=1,
-    )
-    input_data = input_data[model_features].astype(float)
-
-    # Make prediction
-    prediction = model.predict(input_data)
+    prediction = resources.model.predict(input_data)
 
     return {"predicted_price": float(prediction[0])}
