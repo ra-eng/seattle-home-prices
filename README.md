@@ -29,7 +29,6 @@ mle-project-challenge-2026
 │   └── integration/           # Tests against the running container
 ├── requirements.txt           # Runtime dependencies
 ├── requirements-test.txt      # Test dependencies
-├── requirements-notebook.txt  # Notebook dependencies
 ├── Dockerfile                 # API image
 ├── docker-compose.test.yml    # API + integration test runner
 └── Makefile                   # Test commands
@@ -111,11 +110,16 @@ All versions are pinned so Docker builds are reproducible.
 |---|---|---|
 | `requirements.txt` | API image, model image | `fastapi`, `uvicorn`, `pandas`, `scikit-learn`, `pydantic`, `numpy` |
 | `requirements-test.txt` | test image, `scripts/benchmark.py` | `pytest`, `pytest-cov`, `httpx` |
-| `requirements-notebook.txt` | `notebooks/imputation_experiment.ipynb` | runtime + `matplotlib`, `seaborn`, `jupyterlab` |
 
 Python is 3.10, the version the model was trained and pickled with. `numpy 2.2.6`, `pandas 2.3.3` and `scikit-learn 1.7.2` are the latest releases that support it. `scikit-learn` must match the version that created `model.pkl`, so upgrading it means regenerating the model (see Step 2).
 
-Changes in this project: no new runtime dependency was added; `hypothesis` was removed (unused); test dependencies were pinned; notebook dependencies were made explicit.
+Changes in this project: no new runtime dependency was added; `hypothesis` was removed (unused); test dependencies were pinned.
+
+The research notebook (`notebooks/imputation_experiment.ipynb`) also needs `matplotlib`, `seaborn` and Jupyter, which are kept out of the requirements files because the API doesn't use them:
+
+```bash
+pip install -r requirements.txt matplotlib==3.10.9 seaborn==0.13.2 jupyterlab==4.6.4
+```
 
 ## Usage
 
