@@ -12,12 +12,12 @@ test-unit: test-build
 
 # Run integration tests with Docker Compose
 test-integration:
-	docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test
+	docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test
 
 # Run all tests (unit + integration)
 test-all: test-build
 	@echo "Running integration tests..."
-	docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test
+	docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from test
 	@echo "Running unit tests..."
 	docker run --rm \
 		-v $(PWD)/test-results:/app/test-results \
@@ -25,7 +25,7 @@ test-all: test-build
 
 # Clean up containers and test artifacts
 clean:
-	docker-compose -f docker-compose.test.yml down -v
+	docker compose -f docker-compose.test.yml down -v
 	rm -rf test-results/*
 
 # Display help information

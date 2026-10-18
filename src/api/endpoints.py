@@ -1,57 +1,42 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-import json
-import pickle
-import pandas as pd
+import logging
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
+
+from api.schemas import HomeFeatures, PredictionResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-class HomeFeatures(BaseModel):
-    bedrooms: int
-    bathrooms: float
-    sqft_living: float
-    sqft_lot: float
-    floors: float
-    sqft_above: float
-    sqft_basement: float
-    zipcode: str
-
-
 @router.get("/health")
-async def health_check():
+def health_check(request: Request):
     """
     Health check endpoint for container orchestration.
-    Returns 200 if API is ready to accept requests.
+    Returns 200 once the model is loaded and the API is ready to accept requests.
     """
+    if getattr(request.app.state, "resources", None) is None:
+        return JSONResponse(status_code=503, content={"status": "loading"})
     return {"status": "healthy"}
 
 
-@router.post("/predict")
-async def predict(home_features: HomeFeatures):
-    # Load the model and features
-    with open("model/model.pkl", "rb") as model_file:
-        model = pickle.load(model_file)
+@router.post("/predict", response_model=PredictionResponse)
+def predict(home_features: HomeFeatures, request: Request) -> PredictionResponse:
+    """Predict a home price, imputing missing house features with the model's KNNImputer.
 
-    with open("model/model_features.json") as features_file:
-        model_features = json.load(features_file)
-        
-    input_data = pd.DataFrame([home_features.dict()])
+    Declared as sync so FastAPI runs the CPU-bound prediction in its threadpool
+    instead of blocking the event loop.
+    """
+    resources = request.app.state.resources
+    house = home_features.model_dump(exclude={"zipcode"})
+    input_data = resources.build_row(home_features.zipcode, house)
+    if input_data is None:
+        raise HTTPException(status_code=422, detail=f"Unknown zipcode: {home_features.zipcode}")
 
-    # Load demographic data
-    demographics = pd.read_csv("data/zipcode_demographics.csv", dtype={"zipcode": str})
-    demographic_info = demographics[
-        demographics["zipcode"] == home_features.zipcode
-    ].drop(columns="zipcode").reset_index(drop=True)
+    prediction = float(resources.model.predict(input_data)[0])
 
-    # Combine input data with demographic data
-    input_data = pd.concat([input_data, demographic_info], axis=1)
-    print(input_data)
-
-    # Ensure the input data has the correct features
-    input_data = input_data[model_features]
-
-    # Make prediction
-    prediction = model.predict(input_data)
-
-    return {"predicted_price": prediction[0]}
+    imputed = [name for name, value in house.items() if value is None]
+    logger.info("prediction zipcode=%s imputed=%s price=%.0f",
+                home_features.zipcode, imputed, prediction)
+    return PredictionResponse(predicted_price=prediction)
