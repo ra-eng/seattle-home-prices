@@ -1,4 +1,5 @@
 import json
+import logging
 import pickle
 
 import pandas as pd
@@ -119,3 +120,78 @@ def test_predictions_match_previous_implementation(test_client):
         response = test_client.post("/predict", json=example)
 
         assert response.json()["predicted_price"] == pytest.approx(model.predict(expected_input)[0])
+
+
+@pytest.mark.parametrize("field", HOUSE_FEATURES)
+def test_predict_rejects_negative_values(test_client, sample_home_features, field):
+    """Test house features must be non-negative."""
+    sample_home_features[field] = -1
+
+    response = test_client.post("/predict", json=sample_home_features)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("zipcode", ["abc", "9812", "981250", ""])
+def test_predict_rejects_malformed_zipcode(test_client, sample_home_features, zipcode):
+    """Test zipcode must be exactly five digits."""
+    sample_home_features["zipcode"] = zipcode
+
+    response = test_client.post("/predict", json=sample_home_features)
+
+    assert response.status_code == 422
+
+
+def test_predict_accepts_full_unseen_examples(test_client):
+    """Test every row of future_unseen_examples.csv, extra columns included, gets a price."""
+    examples = pd.read_csv(SRC_DIR / "data" / "future_unseen_examples.csv", dtype={"zipcode": str})
+
+    for example in examples.to_dict(orient="records"):
+        response = test_client.post("/predict", json=example)
+
+        assert response.status_code == 200
+        assert response.json()["predicted_price"] > 0
+
+
+def test_predict_returns_generic_500_and_logs_unexpected_errors(
+    test_client, sample_home_features, monkeypatch, caplog
+):
+    """Test unexpected errors are logged and not leaked to the client."""
+    def broken_predict(_):
+        raise RuntimeError("model exploded")
+
+    monkeypatch.setattr(test_client.app.state.resources.model, "predict", broken_predict)
+
+    response = test_client.post("/predict", json=sample_home_features)
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    assert "model exploded" in caplog.text
+
+
+def test_requests_are_logged_with_status_and_duration(test_client, caplog):
+    """Test the request log line carries method, path, status and latency."""
+    caplog.set_level(logging.INFO)
+
+    test_client.get("/health")
+
+    assert "method=GET path=/health status=200 duration_ms=" in caplog.text
+
+
+def test_predictions_log_imputed_fields(test_client, caplog):
+    """Test each prediction logs which fields were imputed."""
+    caplog.set_level(logging.INFO)
+
+    test_client.post("/predict", json={"zipcode": "98042", "bedrooms": 3, "bathrooms": None})
+
+    assert "zipcode=98042 imputed=['bathrooms', 'sqft_living'" in caplog.text
+
+
+def test_openapi_documents_prediction_response(test_client):
+    """Test the response contract is published in the OpenAPI schema."""
+    schema = test_client.get("/openapi.json").json()
+
+    response_schema = schema["paths"]["/predict"]["post"]["responses"]["200"]
+    assert response_schema["content"]["application/json"]["schema"]["$ref"].endswith(
+        "PredictionResponse"
+    )

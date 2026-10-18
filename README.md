@@ -6,25 +6,32 @@ This project implements a RESTful API using FastAPI to deploy a machine learning
 
 ```
 mle-project-challenge-2026
+├── create_model.py            # Trains the model and writes the artifacts
 ├── src
-│   ├── main.py                # Entry point for the FastAPI application
+│   ├── main.py                # App setup: startup loading, logging, error handling, CORS
 │   ├── api
-│   │   ├── endpoints.py       # API endpoints for predictions
+│   │   ├── endpoints.py       # /health and /predict routes
+│   │   ├── schemas.py         # Request/response models and input validation
 │   │   └── resources.py       # Model artifacts loaded once at startup
 │   ├── model
+│   │   ├── Dockerfile         # Image that runs create_model.py
 │   │   ├── model.pkl          # Serialized machine learning model
 │   │   └── model_features.json # Features required for predictions
-│   ├── data
-│   │   ├── kc_house_data.csv  # Training data for the model
-│   │   ├── zipcode_demographics.csv # Demographic data for predictions
-│   │   └── future_unseen_examples.csv # Examples for testing the API
+│   └── data
+│       ├── kc_house_data.csv  # Training data for the model
+│       ├── zipcode_demographics.csv # Demographic data for predictions
+│       └── future_unseen_examples.csv # Examples for testing the API
 ├── scripts
-│   └── benchmark.py            # Latency and load benchmarks
-├── requirements.txt            # Project dependencies
-├── Dockerfile                  # Docker instructions for deployment
-├── README.md                   # Project documentation
-└── test
-    └── test_api.py            # Test cases for the API
+│   └── benchmark.py           # Latency and load benchmarks
+├── test
+│   ├── conftest.py            # Shared fixtures
+│   ├── unit/                  # In-process tests with TestClient
+│   └── integration/           # Tests against the running container
+├── requirements.txt           # Runtime dependencies
+├── requirements-test.txt      # Test dependencies
+├── Dockerfile                 # API image
+├── docker-compose.test.yml    # API + integration test runner
+└── Makefile                   # Test commands
 ```
 
 ## Setup Instructions
@@ -97,7 +104,58 @@ docker logs housing-api
 
 ## Usage
 
-To get predictions from the model, send a POST request to the `/predict` endpoint with the required features in JSON format. The API will return the predicted home price along with any additional metadata.
+To get predictions from the model, send a POST request to the `/predict` endpoint with the home features in JSON format. The interactive contract is available at `/docs`.
+
+### API contract
+
+**`POST /predict`**
+
+| Field | Type | Rules |
+|---|---|---|
+| `zipcode` | string | Required, exactly 5 digits, must exist in the demographics data |
+| `bedrooms` | integer | Optional, `>= 0` |
+| `bathrooms`, `sqft_living`, `sqft_lot`, `floors`, `sqft_above`, `sqft_basement` | number | Optional, `>= 0` |
+
+Unknown fields are ignored, so a full row of `future_unseen_examples.csv` can be sent as is.
+
+```json
+{"predicted_price": 450000.0}
+```
+
+| Status | When | Body |
+|---|---|---|
+| `200` | Prediction made | `{"predicted_price": float}` |
+| `422` | Invalid input (missing or malformed zipcode, negative values, wrong types) | Pydantic validation details |
+| `422` | Zipcode not in the demographics data | `{"detail": "Unknown zipcode: 00000"}` |
+| `500` | Unexpected error (logged with stack trace on the server) | `{"detail": "Internal server error"}` |
+
+**`GET /health`** returns `200 {"status": "healthy"}` once the model is loaded and `503 {"status": "loading"}` before that. The Docker image uses it as its `HEALTHCHECK`, and an orchestrator can use it as a readiness probe.
+
+### Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MODEL_DIR` | `model` | Folder with `model.pkl` and `model_features.json` |
+| `DATA_DIR` | `data` | Folder with `zipcode_demographics.csv` |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+| `CORS_ORIGINS` | `*` | Comma-separated list of allowed origins |
+| `WEB_CONCURRENCY` | `2` (Docker) | Number of uvicorn worker processes |
+| `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` | `1` (Docker) | Native threads per prediction (see [Performance](#performance)) |
+
+### Logging and monitoring
+
+Logs go to stdout (`docker logs housing-api`), one line per event:
+
+```
+2026-10-18 10:00:00,123 INFO main resources loaded in 35 ms
+2026-10-18 10:00:01,456 INFO api.endpoints prediction zipcode=98125 imputed=['bathrooms'] price=555500
+2026-10-18 10:00:01,457 INFO main request method=POST path=/predict status=200 duration_ms=7.9
+```
+
+- **Request log**: method, path, status and latency of every request.
+- **Prediction log**: which fields were imputed, to track how often clients send incomplete data.
+- **Error log**: unexpected exceptions with full stack trace; the client only gets a generic 500.
+- **Container health**: `docker ps` shows `healthy` / `unhealthy` from the `HEALTHCHECK`.
 
 ### Missing value imputation
 
@@ -183,6 +241,18 @@ Predictions are unchanged: `test_predictions_match_previous_implementation` chec
 
 Each worker is a separate process holding its own copy of the model (~9 MB), so `WEB_CONCURRENCY` can grow with the CPU count. The API is stateless and its artifacts are read-only, so it scales horizontally behind a load balancer, with `/health` as the readiness probe.
 
+## Code quality
+
+| Area | Change |
+|---|---|
+| Input validation | Zipcode must be 5 digits; house features must be `>= 0`; response contract declared with `PredictionResponse` |
+| Error handling | Unexpected errors are logged with stack trace and returned as a generic `500`; missing artifacts fail the startup instead of the first request |
+| Logging and monitoring | Request log with latency, prediction log with imputed fields, startup load time, Docker `HEALTHCHECK` on a readiness-aware `/health` |
+| Security | Container runs as a non-root user; CORS origins configurable and no longer combined with credentials |
+| Organization | Schemas, routes, resources and app setup in separate modules; dead code (`utils/loader.py`, duplicated `create_model.py`) removed; `create_model.py` uses its `demographics_path` argument and closes its files |
+| Testing | Validation, error, logging, OpenAPI and parity tests; every row of `future_unseen_examples.csv` is sent to the API; integration tests cover missing data and invalid input; `pytest.ini` sets the import path |
+| Dependencies | Unused `hypothesis` removed; Makefile uses Docker Compose v2; test compose file no longer binds host port 8000 |
+
 ## Testing
 
 This project uses Docker-based testing to ensure environment consistency between testing and production. All tests run inside Docker containers, eliminating "works on my machine" issues.
@@ -197,6 +267,12 @@ make test-unit
 Run integration tests (full environment):
 ```bash
 make test-integration
+```
+
+Run unit tests locally without Docker (`pytest.ini` already puts `src` on the path):
+```bash
+pip install -r requirements.txt -r requirements-test.txt
+pytest test/unit
 ```
 
 Run all tests:
@@ -294,10 +370,10 @@ docker ps  # Should list running containers without error
 
 Solution: Check if the API container is healthy.
 ```bash
-docker-compose -f docker-compose.test.yml up
+docker compose -f docker-compose.test.yml up
 # In another terminal:
-docker-compose -f docker-compose.test.yml ps
-docker-compose -f docker-compose.test.yml logs api
+docker compose -f docker-compose.test.yml ps
+docker compose -f docker-compose.test.yml logs api
 ```
 
 **Issue: Tests pass locally but fail in Docker**
@@ -311,7 +387,7 @@ Solution: This usually indicates environment differences. Check:
 
 Solution: Stop any running containers or services using port 8000.
 ```bash
-docker-compose -f docker-compose.test.yml down
+docker compose -f docker-compose.test.yml down
 docker stop housing-api  # If the main API is running
 ```
 
