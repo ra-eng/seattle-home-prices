@@ -29,6 +29,7 @@ mle-project-challenge-2026
 │   └── integration/           # Tests against the running container
 ├── requirements.txt           # Runtime dependencies
 ├── requirements-test.txt      # Test dependencies
+├── requirements-notebook.txt  # Notebook dependencies
 ├── Dockerfile                 # API image
 ├── docker-compose.test.yml    # API + integration test runner
 └── Makefile                   # Test commands
@@ -101,6 +102,20 @@ docker rm housing-api
 ```bash
 docker logs housing-api
 ```
+
+## Dependencies
+
+All versions are pinned so Docker builds are reproducible.
+
+| File | Used by | Contents |
+|---|---|---|
+| `requirements.txt` | API image, model image | `fastapi`, `uvicorn`, `pandas`, `scikit-learn`, `pydantic`, `numpy` |
+| `requirements-test.txt` | test image, `scripts/benchmark.py` | `pytest`, `pytest-cov`, `httpx` |
+| `requirements-notebook.txt` | `notebooks/imputation_experiment.ipynb` | runtime + `matplotlib`, `seaborn`, `jupyterlab` |
+
+Python is 3.10, the version the model was trained and pickled with. `numpy 2.2.6`, `pandas 2.3.3` and `scikit-learn 1.7.2` are the latest releases that support it. `scikit-learn` must match the version that created `model.pkl`, so upgrading it means regenerating the model (see Step 2).
+
+Changes in this project: no new runtime dependency was added; `hypothesis` was removed (unused); test dependencies were pinned; notebook dependencies were made explicit.
 
 ## Usage
 
@@ -433,7 +448,7 @@ For rapid development iteration:
 3. Fix any issues and repeat
 4. Before committing, run full suite: `make test-all`
 
-The Docker setup mounts source code as volumes, so you don't need to rebuild containers for every change during integration testing.
+`make test-integration` rebuilds both images with `--build`, so code changes are always picked up. The model and data folders are mounted read-only into the API container, so new artifacts don't need a rebuild.
 
 ## Feedback
 
