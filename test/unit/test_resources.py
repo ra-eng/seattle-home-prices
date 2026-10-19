@@ -1,6 +1,8 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
+from sklearn.impute import KNNImputer
 
 from api.resources import load_resources
 
@@ -52,3 +54,24 @@ def test_build_row_marks_missing_house_features_as_nan(resources):
     missing = ["bathrooms", "sqft_living", "sqft_lot", "floors", "sqft_above", "sqft_basement"]
     assert row[missing].isna().all(axis=None)
     assert row.drop(columns=missing).notna().all(axis=None)
+
+
+def test_model_pipeline_starts_with_knn_imputer(resources):
+    """Test the shipped model.pkl imputes missing values instead of failing on NaN."""
+    first_step = resources.model.steps[0][1]
+
+    assert isinstance(first_step, KNNImputer)
+    assert first_step.n_neighbors == 5
+    assert first_step.weights == "distance"
+
+
+def test_imputer_fills_missing_values_within_training_range(resources):
+    """Test imputed values are finite and bounded by what was seen in training."""
+    imputer = resources.model.steps[0][1]
+    row = resources.build_row("98042", {"bedrooms": 3, "sqft_living": 1500.0})
+
+    imputed = imputer.transform(row)
+
+    assert np.isfinite(imputed).all()
+    assert (imputed >= imputer._fit_X.min(axis=0)).all()
+    assert (imputed <= imputer._fit_X.max(axis=0)).all()
